@@ -1,36 +1,23 @@
 import streamlit as st
-import requests
 import json
 from bs4 import BeautifulSoup
+from curl_cffi import requests  # ব্রাউজারের মতো ফিঙ্গারপ্রিন্ট ব্যবহারের জন্য
 
 st.set_page_config(page_title="Foodpanda Menu Extractor", page_icon="🍔")
 
-st.title("🍔 ফুডপান্ডা মেনু এক্সট্র্যাক্টর (Cloud Ready)")
-st.write("ফুডপান্ডার ক্লাউডফ্লেয়ার বাইপাস করার জন্য আপডেট করা সংস্করণ।")
+st.title("🍔 ফুডপান্ডা মেনু এক্সট্র্যাক্টর (Cloud Bypass)")
+st.write("ক্লাউডফ্লেয়ার বাইপাস করার জন্য ব্রাউজার ফিঙ্গারপ্রিন্ট মোডে চলছে।")
 
 url = st.text_input("ফুডপান্ডা রেস্তোরাঁর লিংক দিন:", "https://www.foodpanda.com.bd/restaurant/gqt8/hotel-raj-satkhira")
 
 if st.button("মেনু বের করুন"):
     if url:
-        with st.spinner("সুরক্ষিত সার্ভার থেকে ডেটা সংগ্রহ করা হচ্ছে, দয়া করে অপেক্ষা করুন..."):
-            
-            # নিখুঁত ব্রাউজার হেডার্স যা ক্লাউডফ্লেয়ারকে বোকা বানাতে সাহায্য করবে
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Referer": "https://www.google.com/",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1"
-            }
-            
+        with st.spinner("ব্রাউজার ছদ্মবেশে ডেটা সংগ্রহ করা হচ্ছে, দয়া করে অপেক্ষা করুন..."):
             try:
-                # সাধারণ requests এর বদলে Session ব্যবহার করা যাতে কুকি হ্যান্ডেল করতে পারে
-                session = requests.Session()
-                response = session.get(url, headers=headers, timeout=30)
+                # curl_cffi ব্যবহার করে রিকোয়েস্ট পাঠানো (impersonate='chrome' দিলে ক্লাউডফ্লেয়ার বোকা বনে যায়)
+                response = requests.get(url, impersonate="chrome", timeout=30)
                 
-                # বাংলা ফন্ট বা এনকোডিং ঠিক করার লাইন
+                # বাংলা ফন্ট বা এনকোডিং ঠিক রাখা
                 response.encoding = 'utf-8'
                 
                 if response.status_code == 200:
@@ -66,7 +53,7 @@ if st.button("মেনু বের করুন"):
                     st.text_area("মেনুর প্রিভিউ:", output_text[:1500] + "\n\n...(বাকি অংশ ফাইলে আছে)", height=300)
                     
                 else:
-                    st.error(f"❌ সার্ভার থেকে ব্লক করা হয়েছে। কোড: {response.status_code}. ক্লাউড সার্ভারের আইপি ফুডপান্ডা ট্র্যাক করেছে।")
+                    st.error(f"❌ সার্ভার কোড রিটার্ন করেছে: {response.status_code}")
             except Exception as e:
                 st.error(f"একটি ত্রুটি ঘটেছে: {e}")
     else:
