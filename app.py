@@ -4,32 +4,23 @@ from curl_cffi import requests as curl_requests
 import requests as py_requests
 import time
 
-# ================= কনফিগারেশন =================
-# ফুডপান্ডার লিঙ্ক
 FOODPANDA_URL = "https://www.foodpanda.com.bd/restaurant/gqt8/hotel-raj-satkhira"
-
-# আপনার আপডেট করা অরিজিনাল API লিঙ্ক
 PHP_API_URL = "https://admin.wedeenpay.com/wedeen/partner/ai/foodpanda_sync_receiver.php"
-
-# সিকিউরিটি টোকেন (পিএইচপি ফাইলের পাসওয়ার্ডের সাথে হুবহু মিল থাকতে হবে)
 SECRET_TOKEN = "WedeenPay_Secret_2026"
-# ==============================================
 
 def auto_scrape_and_sync():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ফুডপান্ডা থেকে ডেটা সংগ্রহ শুরু হচ্ছে...")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ফুডপান্ডা থেকে ডেটা সংগ্রহ শুরু...")
     
     try:
-        # ক্লাউডফ্লেয়ার বাইপাস করে ডেটা আনা
         response = curl_requests.get(FOODPANDA_URL, impersonate="chrome", timeout=30)
         response.encoding = 'utf-8'
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            schema_tag = soup.find("script", {"data-testid": "restaurant-seo-schema"})
             
+            # ১. রেস্টুরেন্টের নাম বের করা
             restaurant_name = "Restaurant"
-            output_text = "=== Foodpanda Menu ===\n\n"
-            
+            schema_tag = soup.find("script", {"data-testid": "restaurant-seo-schema"})
             if schema_tag:
                 try:
                     data = json.loads(schema_tag.string)
@@ -37,20 +28,29 @@ def auto_scrape_and_sync():
                 except:
                     pass
             
-            output_text += soup.get_text(separator="\n", strip=True)
+            # ২. মেনু আইটেমগুলোর পরিষ্কার নাম বের করা (aria-label থেকে)
+            available_items = []
+            nodes = soup.find_all(attrs={"aria-label": True})
+            for node in nodes:
+                label = node.get("aria-label", "")
+                if "Tk" in label and "Add to cart" in label:
+                    item_name = label.split(",")[0].strip() # "Butter Naan, Tk 30" থেকে "Butter Naan" আলাদা করা
+                    if item_name not in available_items:
+                        available_items.append(item_name)
             
-            # সার্ভারে ডেটা পাঠানো
-            print(f"'{restaurant_name}' এর ডেটা সার্ভারে পাঠানো হচ্ছে...")
+            print(f"'{restaurant_name}' এর {len(available_items)} টি আইটেম পাওয়া গেছে। সার্ভারে পাঠানো হচ্ছে...")
+            
+            # ৩. আপনার সার্ভারে ডেটা পাঠানো
             payload = {
                 "secret_token": SECRET_TOKEN,
                 "restaurant_name": restaurant_name,
-                "menu_data": output_text
+                "available_items": json.dumps(available_items) # Array টিকে JSON বানিয়ে পাঠানো
             }
             
             res = py_requests.post(PHP_API_URL, data=payload, timeout=30)
             
             if res.status_code == 200:
-                print(f"✅ সফলভাবে সিংক হয়েছে! সার্ভার রেসপন্স: {res.text}")
+                print(f"✅ সার্ভার রেসপন্স: {res.text}")
             else:
                 print(f"❌ সার্ভার এরর: {res.status_code}")
                 
@@ -58,7 +58,7 @@ def auto_scrape_and_sync():
             print(f"❌ ফুডপান্ডা ব্লক করেছে। সার্ভার কোড: {response.status_code}")
             
     except Exception as e:
-        print(f"❌ একটি ত্রুটি ঘটেছে: {e}")
+        print(f"❌ ত্রুটি: {e}")
 
 if __name__ == "__main__":
     auto_scrape_and_sync()
