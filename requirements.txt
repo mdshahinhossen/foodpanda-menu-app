@@ -1,3 +1,5 @@
-streamlit
+fastapi
+uvicorn
+pydantic
 curl_cffi
 beautifulsoup4
