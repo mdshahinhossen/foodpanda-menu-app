@@ -1,220 +1,90 @@
 import json
-import logging
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import time
 from bs4 import BeautifulSoup
-from curl_cffi import requests
+import requests as py_requests
+from playwright.sync_api import sync_playwright
 
+FOODPANDA_URL = "https://www.foodpanda.com.bd/restaurant/gqt8/hotel-raj-satkhira"
+PHP_API_URL = "https://admin.wedeenpay.com/wedeen/partner/ai/foodpanda_sync_receiver.php"
+SECRET_TOKEN = "WedeenPay_Secret_2026"
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("foodpanda-menu-app")
-
-app = FastAPI(title="Foodpanda Menu Extractor")
-
-
-class MenuRequest(BaseModel):
-    url: str
-
-
-def extract_menu_from_html(html: str):
-    soup = BeautifulSoup(html, "html.parser")
-
-    restaurant_name = "Restaurant"
-
-    # Restaurant schema
-    schema_tag = soup.find(
-        "script",
-        {"data-testid": "restaurant-seo-schema"}
-    )
-
-    if schema_tag:
-        try:
-            schema_text = (
-                schema_tag.string
-                or schema_tag.get_text()
-            )
-
-            data = json.loads(schema_text)
-
-            if isinstance(data, dict):
-                restaurant_name = data.get(
-                    "name",
-                    "Restaurant"
-                )
-
-        except Exception as e:
-            logger.warning(
-                "Schema parsing failed: %s",
-                e
-            )
-
-    # Menu items
-    available_items = []
-
-    nodes = soup.find_all(
-        attrs={"aria-label": True}
-    )
-
-    logger.info(
-        "aria-label nodes found: %s",
-        len(nodes)
-    )
-
-    for node in nodes:
-        label = node.get(
-            "aria-label",
-            ""
-        ).strip()
-
-        label_lower = label.lower()
-
-        if (
-            "tk" in label_lower
-            and "add to cart" in label_lower
-        ):
-            item_name = label.split(
-                ",",
-                1
-            )[0].strip()
-
-            if (
-                item_name
-                and item_name not in available_items
-            ):
-                available_items.append(
-                    item_name
-                )
-
-    return {
-        "restaurant_name": restaurant_name,
-        "total_items": len(available_items),
-        "items": available_items
-    }
-
-
-def fetch_foodpanda(url: str):
-
-    logger.info(
-        "FOODPANDA REQUEST | %s",
-        url
-    )
-
-    response = requests.get(
-        url,
-        impersonate="chrome",
-        timeout=30
-    )
-
-    response.encoding = "utf-8"
-
-    logger.info(
-        "FOODPANDA RESPONSE | status=%s | length=%s",
-        response.status_code,
-        len(response.text)
-    )
-
-    if response.status_code != 200:
-
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=(
-                "Foodpanda returned HTTP "
-                f"{response.status_code}"
-            )
-        )
-
-    return extract_menu_from_html(
-        response.text
-    )
-
-
-@app.get("/")
-def root():
-
-    return {
-        "status": "ok",
-        "service": "foodpanda-menu-app",
-        "method": "curl_cffi"
-    }
-
-
-@app.post("/api/extract_menu")
-def extract_menu(request: MenuRequest):
-
-    url = request.url.strip()
-
-    if not url:
-        raise HTTPException(
-            status_code=400,
-            detail="URL is required."
-        )
-
-    if not url.startswith(
-        "https://www.foodpanda.com.bd/"
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only Foodpanda Bangladesh URLs "
-                "are supported."
-            )
-        )
-
-    logger.info(
-        "EXTRACTION REQUEST | %s",
-        url
-    )
-
+def auto_scrape_and_sync():
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ফুডপান্ডা থেকে ডেটা সংগ্রহ শুরু (Playwright দিয়ে)...")
+    
     try:
-
-        result = fetch_foodpanda(url)
-
-        logger.info(
-            "EXTRACTION SUCCESS | restaurant=%s | items=%s",
-            result["restaurant_name"],
-            result["total_items"]
-        )
-
-        return {
-            "success": True,
-            "method": "curl_cffi",
-            **result
-        }
-
-    except HTTPException:
-        raise
-
-    except requests.exceptions.Timeout:
-
-        raise HTTPException(
-            status_code=504,
-            detail="Foodpanda request timed out."
-        )
-
-    except requests.exceptions.RequestException as e:
-
-        logger.exception(
-            "Foodpanda request failed"
-        )
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Foodpanda request failed: "
-                f"{type(e).__name__}: {e}"
+        # Playwright ব্রাউজার চালু করা
+        with sync_playwright() as p:
+            # headless=True মানে ব্রাউজারটি ব্যাকগ্রাউন্ডে চলবে। 
+            # ডিবাগ করার সময় দেখতে চাইলে headless=False করে দিতে পারেন।
+            browser = p.chromium.launch(headless=True)
+            
+            # আসল ইউজারের মতো প্রক্সি/হেডার সেট করা
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
             )
-        )
+            
+            page = context.new_page()
+            
+            print("ব্রাউজার ওপেন হয়েছে। পেজ লোড হচ্ছে, দয়া করে অপেক্ষা করুন...")
+            
+            # ফুডপান্ডার লিংকে যাওয়া এবং পেজের সব JavaScript রান হওয়া পর্যন্ত অপেক্ষা করা
+            page.goto(FOODPANDA_URL, wait_until="networkidle", timeout=60000)
+            
+            # পেজের সম্পূর্ণ HTML সোর্স কোড নিয়ে নেওয়া
+            html_content = page.content()
+            browser.close()
 
+            # --- HTML পার্সিং (আপনার আগের লজিক) ---
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # ১. রেস্টুরেন্টের নাম বের করা
+            restaurant_name = "Restaurant"
+            schema_tag = soup.find("script", {"data-testid": "restaurant-seo-schema"})
+
+            if schema_tag:
+                try:
+                    data = json.loads(schema_tag.string)
+                    restaurant_name = data.get('name', 'Restaurant')
+                except:
+                    pass
+            
+            # ২. মেনু আইটেমগুলোর পরিষ্কার নাম বের করা (Set ব্যবহার করে)
+            available_items = set()
+            nodes = soup.find_all(attrs={"aria-label": True})
+
+            for node in nodes:
+                label = node.get("aria-label", "")
+                if "Tk" in label and "Add to cart" in label:
+                    item_name = label.split(",")[0].strip()
+                    available_items.add(item_name)
+            
+            if not available_items:
+                print("❌ কোনো আইটেম পাওয়া যায়নি। আইপি ব্লক থাকতে পারে বা মেনু লোড হয়নি।")
+                return
+
+            print(f"'{restaurant_name}' এর {len(available_items)} টি আইটেম পাওয়া গেছে। সার্ভারে পাঠানো হচ্ছে...")
+            
+            # ৩. আপনার সার্ভারে ডেটা পাঠানো
+            payload = {
+                "secret_token": SECRET_TOKEN,
+                "restaurant_name": restaurant_name,
+                "available_items": json.dumps(list(available_items))
+            }
+            
+            res = py_requests.post(
+                PHP_API_URL,
+                data=payload,
+                timeout=30
+            )
+            
+            if res.status_code == 200:
+                print(f"✅ সার্ভার রেসপন্স: {res.text}")
+            else:
+                print(f"❌ সার্ভার এরর: {res.status_code}")
+            
     except Exception as e:
+        print(f"❌ ত্রুটি: {e}")
 
-        logger.exception(
-            "EXTRACTION FAILED"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"{type(e).__name__}: {e}"
-            )
-        )
+if __name__ == "__main__":
+    auto_scrape_and_sync()
