@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 
@@ -9,43 +8,26 @@ from curl_cffi import requests
 from playwright.async_api import async_playwright
 
 
-# =========================================================
-# Logging
-# =========================================================
-
 logging.basicConfig(level=logging.INFO)
-
 logger = logging.getLogger("foodpanda-menu-app")
 
+app = FastAPI(title="Foodpanda Menu Extractor")
 
-# =========================================================
-# FastAPI
-# =========================================================
-
-app = FastAPI(title="Foodpanda Scraper API")
-
-
-# =========================================================
-# Request Model
-# =========================================================
 
 class MenuRequest(BaseModel):
     url: str
 
 
-# =========================================================
-# Helpers
-# =========================================================
+# ---------------------------------------------------------
+# HTML MENU EXTRACTION
+# ---------------------------------------------------------
 
 def extract_menu_from_html(html: str):
     soup = BeautifulSoup(html, "html.parser")
 
-    # -----------------------------------------------------
-    # Restaurant name
-    # -----------------------------------------------------
-
     restaurant_name = "Unknown"
 
+    # Restaurant schema
     schema_tag = soup.find(
         "script",
         {"data-testid": "restaurant-seo-schema"}
@@ -68,24 +50,22 @@ def extract_menu_from_html(html: str):
 
         except Exception as e:
             logger.warning(
-                "Restaurant schema parsing failed: %s",
+                "Schema parsing failed: %s",
                 e
             )
 
-    # -----------------------------------------------------
-    # Menu items
-    # -----------------------------------------------------
+    items = []
 
-    available_items = []
+    # -----------------------------------------------------
+    # Method 1: aria-label
+    # -----------------------------------------------------
 
     nodes = soup.find_all(
-        attrs={
-            "aria-label": True
-        }
+        attrs={"aria-label": True}
     )
 
     logger.info(
-        "Found aria-label nodes | count=%s",
+        "aria-label nodes found: %s",
         len(nodes)
     )
 
@@ -96,9 +76,11 @@ def extract_menu_from_html(html: str):
             ""
         )
 
+        label_lower = label.lower()
+
         if (
-            "Tk" in label
-            and "Add to cart" in label
+            "add to cart" in label_lower
+            and "tk" in label_lower
         ):
 
             item_name = (
@@ -109,26 +91,59 @@ def extract_menu_from_html(html: str):
 
             if (
                 item_name
-                and item_name not in available_items
+                and item_name not in items
+                and len(item_name) < 200
             ):
-                available_items.append(
-                    item_name
-                )
+                items.append(item_name)
 
     # -----------------------------------------------------
-    # Additional fallback:
-    # Look for buttons containing Add to cart
+    # Method 2: buttons
     # -----------------------------------------------------
 
-    if not available_items:
+    if not items:
 
         logger.info(
-            "aria-label extraction returned 0 items. "
-            "Trying button/text fallback."
+            "aria-label method found 0 items. "
+            "Trying button fallback."
+        )
+
+        for button in soup.find_all("button"):
+
+            text = button.get_text(
+                " ",
+                strip=True
+            )
+
+            if "Add to cart" in text:
+
+                possible_name = (
+                    text
+                    .replace("Add to cart", "")
+                    .strip()
+                )
+
+                if (
+                    possible_name
+                    and len(possible_name) < 200
+                    and possible_name not in items
+                ):
+                    items.append(
+                        possible_name
+                    )
+
+    # -----------------------------------------------------
+    # Method 3: text fallback
+    # -----------------------------------------------------
+
+    if not items:
+
+        logger.info(
+            "Button method found 0 items. "
+            "Trying text fallback."
         )
 
         for element in soup.find_all(
-            ["button", "div", "span"]
+            ["div", "span"]
         ):
 
             text = element.get_text(
@@ -141,42 +156,36 @@ def extract_menu_from_html(html: str):
                 and len(text) > 10
             ):
 
-                parts = text.split(
-                    "Add to cart"
+                possible_name = (
+                    text
+                    .split("Add to cart")[0]
+                    .strip()
                 )
 
-                if parts:
-
-                    possible_name = (
-                        parts[0]
-                        .strip()
-                    )
-
-                    if (
+                if (
+                    possible_name
+                    and len(possible_name) < 200
+                    and possible_name not in items
+                ):
+                    items.append(
                         possible_name
-                        and len(possible_name) < 200
-                        and possible_name
-                        not in available_items
-                    ):
-                        available_items.append(
-                            possible_name
-                        )
+                    )
 
     return {
         "restaurant_name": restaurant_name,
-        "total_items": len(available_items),
-        "items": available_items
+        "total_items": len(items),
+        "items": items
     }
 
 
-# =========================================================
-# Playwright Browser Extraction
-# =========================================================
+# ---------------------------------------------------------
+# PLAYWRIGHT
+# ---------------------------------------------------------
 
 async def extract_with_playwright(url: str):
 
     logger.info(
-        "Playwright extraction started | url=%s",
+        "PLAYWRIGHT START | url=%s",
         url
     )
 
@@ -188,8 +197,7 @@ async def extract_with_playwright(url: str):
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-blink-features=AutomationControlled"
+                "--disable-gpu"
             ]
         )
 
@@ -199,11 +207,13 @@ async def extract_with_playwright(url: str):
                 "height": 768
             },
             user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            },
+                "Chrome/131.0.0.0 "
+                "Safari/537.36"
+            ),
             locale="bn-BD",
             timezone_id="Asia/Dhaka"
         )
@@ -212,18 +222,12 @@ async def extract_with_playwright(url: str):
 
         try:
 
-            # -------------------------------------------------
-            # Extra browser headers
-            # -------------------------------------------------
-
             await page.set_extra_http_headers({
-                "Accept-Language": "bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7"
+                "Accept-Language":
+                    "bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7"
             })
 
-            # -------------------------------------------------
-            # Hide obvious automation property
-            # -------------------------------------------------
-
+            # Hide webdriver flag
             await page.add_init_script("""
                 Object.defineProperty(
                     navigator,
@@ -234,9 +238,9 @@ async def extract_with_playwright(url: str):
                 );
             """)
 
-            # -------------------------------------------------
-            # Open Foodpanda
-            # -------------------------------------------------
+            logger.info(
+                "Opening Foodpanda page..."
+            )
 
             response = await page.goto(
                 url,
@@ -251,47 +255,39 @@ async def extract_with_playwright(url: str):
             )
 
             logger.info(
-                "Playwright page response | status=%s | url=%s",
+                "PLAYWRIGHT RESPONSE | status=%s | final_url=%s",
                 status,
                 page.url
             )
 
-            # -------------------------------------------------
-            # Wait for dynamic content
-            # -------------------------------------------------
-
+            # Give JavaScript time to load
             await page.wait_for_timeout(
-                5000
+                7000
             )
 
-            # -------------------------------------------------
-            # Small scroll
-            # -------------------------------------------------
+            # Scroll several times
+            for _ in range(5):
 
-            await page.evaluate("""
-                window.scrollTo(
-                    0,
-                    document.body.scrollHeight
-                );
-            """)
+                await page.evaluate("""
+                    window.scrollBy(
+                        0,
+                        window.innerHeight
+                    );
+                """)
 
-            await page.wait_for_timeout(
-                3000
-            )
-
-            # -------------------------------------------------
-            # Get rendered HTML
-            # -------------------------------------------------
+                await page.wait_for_timeout(
+                    1500
+                )
 
             html = await page.content()
 
             logger.info(
-                "Playwright rendered HTML | length=%s",
+                "PLAYWRIGHT HTML LENGTH | %s",
                 len(html)
             )
 
             # -------------------------------------------------
-            # Detect obvious block page
+            # Check if Foodpanda blocked the browser
             # -------------------------------------------------
 
             lower_html = html.lower()
@@ -301,31 +297,39 @@ async def extract_with_playwright(url: str):
                 "forbidden",
                 "captcha",
                 "verify you are human",
-                "request blocked"
+                "request blocked",
+                "security check"
             ]
 
-            blocked = any(
-                word in lower_html
-                for word in blocked_words
-            )
+            blocked_word = None
 
-            if blocked:
+            for word in blocked_words:
+
+                if word in lower_html:
+                    blocked_word = word
+                    break
+
+            if blocked_word:
 
                 logger.warning(
-                    "Playwright appears to be blocked by Foodpanda"
+                    "FOODPANDA BLOCK DETECTED | %s",
+                    blocked_word
                 )
 
                 raise RuntimeError(
-                    "Foodpanda browser request appears blocked"
+                    "Foodpanda blocked browser request"
                 )
+
+            # -------------------------------------------------
+            # Extract
+            # -------------------------------------------------
 
             result = extract_menu_from_html(
                 html
             )
 
             logger.info(
-                "Playwright extraction result | "
-                "restaurant=%s | items=%s",
+                "PLAYWRIGHT RESULT | restaurant=%s | items=%s",
                 result["restaurant_name"],
                 result["total_items"]
             )
@@ -337,14 +341,14 @@ async def extract_with_playwright(url: str):
             await browser.close()
 
 
-# =========================================================
-# curl_cffi Fallback
-# =========================================================
+# ---------------------------------------------------------
+# CURL CFFI FALLBACK
+# ---------------------------------------------------------
 
 def extract_with_curl(url: str):
 
     logger.info(
-        "curl_cffi fallback started | url=%s",
+        "CURL FALLBACK START | url=%s",
         url
     )
 
@@ -357,9 +361,8 @@ def extract_with_curl(url: str):
     response.encoding = "utf-8"
 
     logger.info(
-        "curl_cffi response | status=%s | final_url=%s | content_length=%s",
+        "CURL RESPONSE | status=%s | length=%s",
         response.status_code,
-        response.url,
         len(response.text)
     )
 
@@ -378,9 +381,9 @@ def extract_with_curl(url: str):
     )
 
 
-# =========================================================
-# Main API
-# =========================================================
+# ---------------------------------------------------------
+# API
+# ---------------------------------------------------------
 
 @app.post("/api/extract_menu")
 async def extract_menu(request: MenuRequest):
@@ -388,19 +391,32 @@ async def extract_menu(request: MenuRequest):
     url = request.url.strip()
 
     if not url:
+
         raise HTTPException(
             status_code=400,
             detail="URL is required."
         )
 
+    if not url.startswith(
+        "https://www.foodpanda.com.bd/"
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only Foodpanda Bangladesh URLs "
+                "are supported."
+            )
+        )
+
     logger.info(
-        "extract_menu started | url=%s",
+        "EXTRACTION REQUEST | url=%s",
         url
     )
 
-    # =====================================================
-    # Method 1: Playwright
-    # =====================================================
+    # -----------------------------------------------------
+    # PLAYWRIGHT FIRST
+    # -----------------------------------------------------
 
     try:
 
@@ -408,16 +424,10 @@ async def extract_menu(request: MenuRequest):
             url
         )
 
-        # -------------------------------------------------
-        # If browser successfully extracted items
-        # -------------------------------------------------
-
         if result["total_items"] > 0:
 
             logger.info(
-                "SUCCESS via Playwright | "
-                "restaurant=%s | items=%s",
-                result["restaurant_name"],
+                "SUCCESS USING PLAYWRIGHT | items=%s",
                 result["total_items"]
             )
 
@@ -428,23 +438,20 @@ async def extract_menu(request: MenuRequest):
             }
 
         logger.warning(
-            "Playwright returned 0 menu items. "
-            "Trying curl_cffi fallback."
+            "Playwright returned 0 items."
         )
 
     except Exception as e:
 
         logger.exception(
-            "Playwright extraction failed | "
-            "type=%s | error=%s",
+            "PLAYWRIGHT FAILED | type=%s | error=%s",
             type(e).__name__,
             e
         )
 
-
-    # =====================================================
-    # Method 2: curl_cffi fallback
-    # =====================================================
+    # -----------------------------------------------------
+    # CURL FALLBACK
+    # -----------------------------------------------------
 
     try:
 
@@ -453,8 +460,7 @@ async def extract_menu(request: MenuRequest):
         )
 
         logger.info(
-            "SUCCESS via curl_cffi | "
-            "restaurant=%s | items=%s",
+            "CURL RESULT | restaurant=%s | items=%s",
             result["restaurant_name"],
             result["total_items"]
         )
@@ -466,66 +472,52 @@ async def extract_menu(request: MenuRequest):
         }
 
     except HTTPException:
-
         raise
 
-    except requests.exceptions.Timeout as e:
-
-        logger.exception(
-            "Foodpanda request TIMEOUT | url=%s",
-            url
-        )
+    except requests.exceptions.Timeout:
 
         raise HTTPException(
             status_code=504,
             detail=(
-                "Foodpanda request timed out "
-                "after 30 seconds."
+                "Foodpanda request timed out."
             )
-        ) from e
+        )
 
     except requests.exceptions.RequestException as e:
 
         logger.exception(
-            "Foodpanda request ERROR | "
-            "type=%s | url=%s",
-            type(e).__name__,
-            url
+            "CURL REQUEST ERROR"
         )
 
         raise HTTPException(
             status_code=502,
             detail=(
-                "Foodpanda request failed: "
+                f"Foodpanda request failed: "
                 f"{type(e).__name__}: {e}"
             )
-        ) from e
+        )
 
     except Exception as e:
 
         logger.exception(
-            "UNEXPECTED extract_menu ERROR | "
-            "type=%s | url=%s",
-            type(e).__name__,
-            url
+            "EXTRACTION FAILED"
         )
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"{type(e).__name__}: {e}"
-            )
-        ) from e
+            detail=f"{type(e).__name__}: {e}"
+        )
 
 
-# =========================================================
-# Health Check
-# =========================================================
+# ---------------------------------------------------------
+# HEALTH CHECK
+# ---------------------------------------------------------
 
 @app.get("/")
 def root():
 
     return {
         "status": "ok",
-        "service": "foodpanda-menu-app"
+        "service": "foodpanda-menu-app",
+        "playwright": True
     }
